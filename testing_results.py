@@ -4,7 +4,6 @@ matplotlib.use('TkAgg')  # Set backend BEFORE importing pyplot
 import torch
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import train_test_split
 import torch.nn as nn
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
@@ -16,174 +15,97 @@ from matplotlib.widgets import Button
 from matplotlib.colors import Normalize
 from matplotlib.cm import ScalarMappable
 import matplotlib.cm as cm
+import pickle
 
 # ==========================================
-# HELPER FUNCTIONS FOR DATA LOADING & PROCESSING
+# LOAD PREPROCESSED DATA
 # ==========================================
+print("=" * 70)
+print("LOADING PREPROCESSED DATA")
+print("=" * 70)
 
-def load_diagonal_load_npz_data(npz_path):
-    """Load NPZ file and filter diagonal samples."""
-    data = np.load(npz_path, allow_pickle=True)
-    all_names = data['c']
-    dia_mask = np.array(['dia' in str(name) for name in all_names])
-    
-    return {
-        'input': data['a'][dia_mask],      # (N_dia, 5000, 9)
-        'output': data['b'][dia_mask],     # (N_dia, 5000, 4)
-        'names': all_names[dia_mask],
-        'count': np.sum(dia_mask)
-    }
+data_dir = 'Data/preprocessed'
 
-def load_csv_scalars(csv_path):
-    """Load scalar outputs from CSV and create lookup dictionary."""
-    df = pd.read_csv(csv_path)
-    scalar_columns = ['max_dia_stress(MPa)', 'mass(kg)', '1st_mode_freq(Hz)']
-    
-    csv_lookup = {}
-    for idx, row in df.iterrows():
-        item_name = str(row['item_name'])
-        csv_lookup[item_name] = [
-            row['max_dia_stress(MPa)'],
-            row['mass(kg)'],
-            row['1st_mode_freq(Hz)']
-        ]
-    
-    return csv_lookup, scalar_columns
+# Load preprocessing info
+with open(f'{data_dir}/preprocess_info.pkl', 'rb') as f:
+    preprocess_info = pickle.load(f)
 
-def align_data_with_csv(names, csv_lookup):
-    """Match NPZ names with CSV data, removing prefixes."""
-    dia_scalars = []
-    valid_indices = []
-    unmatched_names = []
-    
-    for idx, name in enumerate(names):
-        name_str = str(name)
-        clean_name = name_str.replace('dia_', '').replace('hor_', '').replace('ver_', '')
-        
-        if clean_name in csv_lookup:
-            dia_scalars.append(csv_lookup[clean_name])
-            valid_indices.append(idx)
-        else:
-            unmatched_names.append(name_str)
-    
-    return np.array(dia_scalars, dtype=np.float32), np.array(valid_indices), unmatched_names
+# Load preprocessed arrays
+train_input_xyz = np.load(f'{data_dir}/train_input_xyz.npy')
+train_field_norm = np.load(f'{data_dir}/train_field_norm.npy')
+test_input_xyz = np.load(f'{data_dir}/test_input_xyz.npy')
+test_field_norm = np.load(f'{data_dir}/test_field_norm.npy')
+test_field_output = np.load(f'{data_dir}/test_field_output.npy')
+test_scalars = np.load(f'{data_dir}/test_scalars.npy')
 
-def create_train_test_split(data_length, test_size=0.2, random_state=42):
-    """Create train/test indices."""
-    train_idx, test_idx = train_test_split(
-        np.arange(data_length),
-        test_size=test_size,
-        random_state=random_state
-    )
-    return train_idx, test_idx
+# Load normalization statistics
+field_min = preprocess_info['field_min']
+field_max = preprocess_info['field_max']
 
-def normalize_data(train_data, test_data):
-    """Normalize train and test data using train statistics only."""
-    data_min = train_data.min(axis=0)
-    data_max = train_data.max(axis=0)
-    
-    train_norm = (train_data - data_min) / (data_max - data_min)
-    test_norm = (test_data - data_min) / (data_max - data_min)
-    
-    return train_norm, test_norm, data_min, data_max
+print(f"\n✅ Data loaded successfully!")
+print(f"   Test samples: {len(test_input_xyz)}")
+print(f"   Input shape: {test_input_xyz.shape}")
+print(f"   Field output shape: {test_field_norm.shape}")
 
-def normalize_field_outputs(train_field, test_field):
-    """Normalize field outputs using train statistics only."""
-    field_min = train_field.min(axis=(0, 1))  # Min across samples and points
-    field_max = train_field.max(axis=(0, 1))  # Max across samples and points
-    
-    train_field_norm = (train_field - field_min) / (field_max - field_min)
-    test_field_norm = (test_field - field_min) / (field_max - field_min)
-    
-    return train_field_norm, test_field_norm, field_min, field_max
+# Convert to tensors
+test_input_tensor = torch.from_numpy(test_input_xyz).float()  # (N_test, 5000, 3)
+test_field_tensor = torch.from_numpy(test_field_norm).float()  # (N_test, 5000, 4)
 
-def print_statistics(data, label, columns=None):
-    """Print min, max, mean, std for each channel."""
-    print(f"\n{label}:")
-    for i in range(data.shape[1]):
-        col_name = columns[i] if columns else f"Channel {i}"
-        print(f"  {col_name}:")
-        print(f"    Min:  {data[:, i].min():.6f}")
-        print(f"    Max:  {data[:, i].max():.6f}")
-        print(f"    Mean: {data[:, i].mean():.6f}")
-        print(f"    Std:  {data[:, i].std():.6f}")
+print("=" * 70)
+
+# ==========================================
+# MODEL DEFINITIONS
+# ==========================================
 
 class PointNetBaseline(nn.Module):
     def __init__(self):
         super(PointNetBaseline, self).__init__()
         
-        # ---------------------------------------------------------
-        # 1. Local Feature Extraction (Shared MLP)
-        # Input: (Batch, 3, N) -> 3 coords
-        # The specific channel sizes are derived from Figure 5 in the paper.
-        # ---------------------------------------------------------
+        # Local Feature Extraction
         self.conv1 = nn.Conv1d(3, 33, 1)
         self.bn1 = nn.BatchNorm1d(33)
-        
         self.conv2 = nn.Conv1d(33, 33, 1)
         self.bn2 = nn.BatchNorm1d(33)
-        
         self.conv3 = nn.Conv1d(33, 33, 1)
         self.bn3 = nn.BatchNorm1d(33)
         
-        # ---------------------------------------------------------
-        # 2. Global Feature Extraction
-        # These layers process the local features before Max Pooling
-        # ---------------------------------------------------------
+        # Global Feature Extraction
         self.conv4 = nn.Conv1d(33, 67, 1)
         self.bn4 = nn.BatchNorm1d(67)
-        
         self.conv5 = nn.Conv1d(67, 542, 1)
         self.bn5 = nn.BatchNorm1d(542)
         
-        # ---------------------------------------------------------
-        # 3. Field Prediction (Shared MLP after concatenation)
-        # Concatenation input size: 542 (Global) + 33 (Local from conv3) = 575
-        # ---------------------------------------------------------
+        # Field Prediction Head
         self.conv6 = nn.Conv1d(575, 271, 1)
         self.bn6 = nn.BatchNorm1d(271)
-        
         self.conv7 = nn.Conv1d(271, 135, 1)
         self.bn7 = nn.BatchNorm1d(135)
-        
         self.conv8 = nn.Conv1d(135, 67, 1)
         self.bn8 = nn.BatchNorm1d(67)
-        
-        # Final output: 4 channels (ux, uy, uz, von Mises stress)
         self.conv9 = nn.Conv1d(67, 4, 1)
 
     def forward(self, x):
-        # x shape: (Batch, 8, N)
-        
-        # --- Local Features ---
+        # Local Features
         x = F.relu(self.bn1(self.conv1(x)))
         x = F.relu(self.bn2(self.conv2(x)))
-        local_features = F.relu(self.bn3(self.conv3(x))) # Save for concatenation (B, 33, N)
+        local_features = F.relu(self.bn3(self.conv3(x)))  # (B, 33, N)
         
-        # --- Global Feature Generation ---
+        # Global Features
         x = F.relu(self.bn4(self.conv4(local_features)))
-        x = F.relu(self.bn5(self.conv5(x))) # (B, 542, N)
+        x = F.relu(self.bn5(self.conv5(x)))  # (B, 542, N)
         
-        # Max Pooling over the points (N dimension)
-        global_feature = torch.max(x, 2, keepdim=True)[0] # (B, 542, 1)
-        
-        # Expand global feature to match number of points N
-        # (B, 542, 1) -> (B, 542, N)
+        # Max Pooling
+        global_feature = torch.max(x, 2, keepdim=True)[0]  # (B, 542, 1)
         global_feature_repeated = global_feature.repeat(1, 1, local_features.size(2))
         
-        # --- Concatenation ---
-        # Concatenate Global (542) + Local (33) -> (575)
+        # Concatenate & Predict
         combined = torch.cat([global_feature_repeated, local_features], dim=1)
-        
-        # --- Field Prediction ---
         x = F.relu(self.bn6(self.conv6(combined)))
         x = F.relu(self.bn7(self.conv7(x)))
         x = F.relu(self.bn8(self.conv8(x)))
-        
-        # Output Layer with Sigmoid activation as specified in Section 2.3
         x = torch.sigmoid(self.conv9(x))
         
-        return x # Output shape: (Batch, 4, N)
+        return x
     
 class PointNetLatent(nn.Module):
     """Extract latent features before the field prediction head"""
@@ -202,19 +124,14 @@ class PointNetLatent(nn.Module):
 
     def forward(self, x):
         # x shape: (B, 3, N)
-        # --- Local Features ---
         x = F.relu(self.bn1(self.conv1(x)))
         x = F.relu(self.bn2(self.conv2(x)))
         local_features = F.relu(self.bn3(self.conv3(x)))  # (B, 33, N)
         
-        # --- Global Feature Generation ---
         x = F.relu(self.bn4(self.conv4(local_features)))
         x = F.relu(self.bn5(self.conv5(x)))  # (B, 542, N)
         
-        # Max Pooling over the points (N dimension)
         global_feature = torch.max(x, 2, keepdim=True)[0]  # (B, 542, 1)
-        
-        # Squeeze to (B, 542)
         global_feature = global_feature.squeeze(-1)
         
         return global_feature
@@ -229,127 +146,64 @@ class ScalarHead(nn.Module):
         self.fc2 = nn.Linear(hidden_dim, hidden_dim // 2)
         self.bn2 = nn.BatchNorm1d(hidden_dim // 2)
         
-        self.fc3 = nn.Linear(hidden_dim // 2, 3)  # Output: [stress, mass, freq]
+        self.fc3 = nn.Linear(hidden_dim // 2, 3)
 
     def forward(self, latent):
-        # latent: (B, 542)
         x = F.relu(self.bn1(self.fc1(latent)))
         x = F.dropout(x, p=0.2, training=self.training)
         
         x = F.relu(self.bn2(self.fc2(x)))
         x = F.dropout(x, p=0.2, training=self.training)
         
-        # Output: (B, 3) - already in [0, 1] range due to sigmoid on inputs
         output = torch.sigmoid(self.fc3(x))
-        
         return output
     
+
 # ==========================================
-# SETUP DEVICE
+# SETUP DEVICE AND LOAD MODELS
 # ==========================================
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Device: {device}")
 
-# ==========================================
-# INSTANTIATE AND LOAD POINTNET MODEL
-# ==========================================
+# Load PointNet model
 print("\n" + "=" * 70)
-print("LOADING POINTNET BASELINE MODEL")
+print("LOADING PRETRAINED MODELS")
 print("=" * 70)
 
-model = PointNetBaseline()
-model = model.to(device)
-print(f"Total parameters: {sum(p.numel() for p in model.parameters()):,}")
-
-# Load pretrained weights
+model = PointNetBaseline().to(device)
 pointnet_path = 'Data/weight_data/pointnet_best_model.pth'
 model.load_state_dict(torch.load(pointnet_path, map_location=device))
 model.eval()
-print(f"✅ Loaded pretrained PointNet from: {pointnet_path}")
+print(f"✅ PointNet loaded: {sum(p.numel() for p in model.parameters()):,} parameters")
 
-# ==========================================
-# CREATE AND LOAD LATENT EXTRACTOR
-# ==========================================
-print("\n" + "=" * 70)
-print("SETTING UP LATENT FEATURE EXTRACTOR")
-print("=" * 70)
-
-latent_extractor = PointNetLatent(model)
-latent_extractor = latent_extractor.to(device)
+# Load latent extractor
+latent_extractor = PointNetLatent(model).to(device)
 latent_extractor.eval()
-print("✅ Latent extractor created from pretrained PointNet")
+print(f"✅ Latent extractor ready")
 
-# ==========================================
-# CREATE AND LOAD SCALAR HEAD
-# ==========================================
-print("\n" + "=" * 70)
-print("LOADING SCALAR HEAD MODEL")
-print("=" * 70)
-
-scalar_head = ScalarHead()
-scalar_head = scalar_head.to(device)
-scalar_head_params = sum(p.numel() for p in scalar_head.parameters())
-print(f"Scalar head parameters: {scalar_head_params:,}")
-
-# Load pretrained weights
+# Load scalar head
+scalar_head = ScalarHead().to(device)
 scalar_head_path = 'Data/weight_data/scalar_head_best.pth'
 scalar_head.load_state_dict(torch.load(scalar_head_path, map_location=device))
 scalar_head.eval()
-print(f"✅ Loaded scalar head from: {scalar_head_path}")
+print(f"✅ Scalar head loaded: {sum(p.numel() for p in scalar_head.parameters()):,} parameters")
 
-print("\n" + "=" * 70)
-print("MODELS READY FOR INFERENCE")
 print("=" * 70)
 
-# Load NPZ data
-npz_data = load_diagonal_load_npz_data('Data/Rpt0_N5000.npz')
-# Load CSV and align
-csv_lookup, scalar_columns = load_csv_scalars('Data/bracket_labels.csv')
-dia_scalars, valid_indices, unmatched = align_data_with_csv(npz_data['names'], csv_lookup)
+# ==========================================
+# PREPARE TEST DATA FOR VISUALIZATION
+# ==========================================
+print("\nPreparing test data for inference...")
 
-# Filter all data to matched samples
-field_output = npz_data['output'][valid_indices]  # (N, 5000, 4)
-names_matched = npz_data['names'][valid_indices]
+# Get denormalization statistics
+scalar_columns = preprocess_info['scalar_columns']
+scalar_min = preprocess_info['scalar_min']
+scalar_max = preprocess_info['scalar_max']
 
-print(f"✅ Successfully matched: {len(dia_scalars)} samples")
-print(f"\nField output shape: {field_output.shape}")
-print(f"Scalar output shape: {dia_scalars.shape}")
-
-
-train_idx, test_idx = create_train_test_split(len(dia_scalars), test_size=0.2, random_state=42)
-
-# Split field outputs
-train_field = field_output[train_idx]   # (N_train, 5000, 4)
-test_field = field_output[test_idx]     # (N_test, 5000, 4)
-
-# Split scalar outputs
-train_scalars = dia_scalars[train_idx]  # (N_train, 3)
-test_scalars = dia_scalars[test_idx]    # (N_test, 3)
-
-print(f"Train field shape: {train_field.shape}")
-print(f"Test field shape: {test_field.shape}")
-print(f"Train scalars shape: {train_scalars.shape}")
-print(f"Test scalars shape: {test_scalars.shape}")
-
-
-train_field_norm, test_field_norm, field_min, field_max = normalize_field_outputs(
-    train_field, test_field
-)
-train_scalars_norm, test_scalars_norm, scalar_min, scalar_max = normalize_data(
-    train_scalars, test_scalars
-)
-
-# Field outputs (NORMALIZED)
-train_field_tensor = torch.from_numpy(train_field_norm).float()
-test_field_tensor = torch.from_numpy(test_field_norm).float()
-
-# Input data (NO NORMALIZATION)
-train_input_tensor = torch.from_numpy(npz_data['input'][train_idx]).float()
-test_input_tensor = torch.from_numpy(npz_data['input'][test_idx]).float()
-
-# Scalar outputs (NORMALIZED)
-train_scalars_tensor = torch.from_numpy(train_scalars_norm).float()
-test_scalars_tensor = torch.from_numpy(test_scalars_norm).float()
+print(f"✅ Test data prepared")
+print(f"   Samples: {len(test_input_tensor)}")
+print(f"   Field min/max: {field_min} / {field_max}")
+print(f"   Scalar min/max: {scalar_min} / {scalar_max}")
 
 # ==========================================
 # VISUALIZATION: POINT CLOUD WITH DISPLACEMENTS
@@ -438,7 +292,7 @@ fig = plt.figure(figsize=(18, 8))
 fig.suptitle('Point Cloud Visualization: Ground Truth vs Predicted', fontsize=14, fontweight='bold')
 
 # Create GridSpec for plots and table
-gs = fig.add_gridspec(1, 3, left=0.05, right=0.88, top=0.92, bottom=0.15, 
+gs = fig.add_gridspec(1, 3, left=0.05, right=0.98, top=0.92, bottom=0.15, 
                        width_ratios=[1, 1, 0.8], wspace=0.3)
 
 # Left plot: Ground truth
@@ -455,8 +309,8 @@ cmax = 232
 norm = Normalize(vmin=0, vmax=cmax)
 scalar_map = ScalarMappable(norm=norm, cmap=cmap)
 
-# Create colorbar only once (persistent) - positioned to the left of the table
-cbar_ax = fig.add_axes([0.89, 0.2, 0.015, 0.6])
+# Create colorbar only once (persistent)
+cbar_ax = fig.add_axes([0.935, 0.2, 0.015, 0.6])
 cbar = fig.colorbar(scalar_map, cax=cbar_ax)
 cbar.set_label('von Mises Stress (MPa)', rotation=270, labelpad=20, fontsize=10, fontweight='bold')
 
