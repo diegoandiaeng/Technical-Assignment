@@ -19,7 +19,13 @@ For the technical assignment the following modifications are done:
 
 <img width="1432" height="582" alt="image" src="https://github.com/user-attachments/assets/496bf3bf-32ec-4eaa-bdc7-52b06fbc6bd1" />
 
+
+
 Clarification regarding the 1D Convolutions: The kernel size used is 1 since the kernel slides point by point (points are unordered), the input features correspond to the channels (like RGB for an image).
+
+
+
+
 
 Additional results:
 
