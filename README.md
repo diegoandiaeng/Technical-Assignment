@@ -4,7 +4,7 @@ The repository includes:
 - Notebook for unsupervised ML techniques using the econded representation: encoder_study.ipynb 
 - Notebook for an interactive UI for testing to load and show deformed component (intended for presentation): testing_results.ipynb
 - Data folder with weight data including .pth files of the trained models, and .csv with geometry code and global values (max stress, 1st freq, mass).
-  The point cloud data is a heavy file but it can be found and dowloaded in the following link https://drive.google.com/file/d/1bPaPRwL8Eu5IJuFOIRYBZSaDIoCUSqeB/view?usp=sharing
+  The point cloud data (Rpt0_N5000.npz) is a heavy file but it can be found and dowloaded in the following link https://drive.google.com/file/d/1bPaPRwL8Eu5IJuFOIRYBZSaDIoCUSqeB/view?usp=sharing
   it needs to be added inside the Data folder.
 
 
