@@ -3,6 +3,7 @@ The repository includes:
 - Notebook for training the Scalar Head using the pre-trained PointNet architecture (global encoder): PointNetScalar_training.ipynb
 - Notebook for unsupervised ML techniques using the econded representation: encoder_study.ipynb 
 - Notebook for an interactive UI for testing to load and show deformed component (intended for presentation): testing_results.ipynb
+- Notebook for data_preprocessing takes pre sampled point clouds of 5000 point + output fields (Rpt0_N5000.npz) and csv file with global scalars (bracket_labels.csv) and performs data preprocessing including splits and normalization.
 - Data folder with weight data including .pth files of the trained models, and .csv with geometry code and global values (max stress, 1st freq, mass).
   The point cloud data (Rpt0_N5000.npz) is a heavy file but it can be found and dowloaded in the following link https://drive.google.com/file/d/1bPaPRwL8Eu5IJuFOIRYBZSaDIoCUSqeB/view?usp=sharing
   it needs to be added inside the Data folder.
